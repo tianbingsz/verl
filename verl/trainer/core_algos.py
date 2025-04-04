@@ -15,14 +15,27 @@
 """
 Core functions to implement PPO algorithms.
 The function implemented in this file should be used by trainer with different distributed strategies to
-implement PPO
+implement PPO and GRPO
 """
 
 import numpy as np
+from enum import Enum
 import torch
 from collections import defaultdict
 
 import verl.utils.torch_functional as verl_F
+
+class Role(Enum):
+    """
+    To create more roles dynamically, you can subclass Role and add new members
+    """
+    Actor = 0
+    Rollout = 1
+    ActorRollout = 2
+    Critic = 3
+    RefPolicy = 4
+    RewardModel = 5
+    ActorRolloutRef = 6
 
 
 class AdaptiveKLController:
@@ -113,13 +126,14 @@ def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                    index: torch.Tensor,
                                    epsilon: float = 1e-6):
     """
-    Compute advantage for GRPO, operating only on Outcome reward
+    Compute advantage for GRPO, operating only on Outcome reward 
     (with only one scalar reward for each response).
     Args:
         token_level_rewards: `(torch.Tensor)`
             shape: (bs, response_length)
         eos_mask: `(torch.Tensor)`
             shape: (bs, response_length)
+    
     Returns:
         advantages: `(torch.Tensor)`
             shape: (bs, response_length)
@@ -127,7 +141,8 @@ def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
             shape: (bs, response_length)
     """
     response_length = token_level_rewards.shape[-1]
-    scores = token_level_rewards.sum(dim=-1)
+    non_zero_mask = (token_level_rewards != 0)
+    scores = (token_level_rewards * non_zero_mask).sum(dim=-1)
 
     id2score = defaultdict(list)
     id2mean = {}
@@ -151,116 +166,6 @@ def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
         scores = scores.unsqueeze(-1).tile([1, response_length]) * eos_mask
 
     return scores, scores
-
-
-def compute_rloo_outcome_advantage(token_level_rewards: torch.Tensor,
-                                   eos_mask: torch.Tensor,
-                                   index: torch.Tensor,
-                                   epsilon: float = 1e-6):
-    """
-    Compute advantage for RLOO based on https://arxiv.org/abs/2402.14740
-    Args:
-        token_level_rewards: `(torch.Tensor)`
-            shape: (bs, response_length)
-        eos_mask: `(torch.Tensor)`
-            shape: (bs, response_length)
-
-    Returns:
-        advantages: `(torch.Tensor)`
-            shape: (bs, response_length)
-        Returns: `(torch.Tensor)`
-            shape: (bs, response_length)
-    """
-    response_length = token_level_rewards.shape[-1]
-    scores = token_level_rewards.sum(dim=-1)
-
-    id2score = defaultdict(list)
-    id2mean = {}
-
-    with torch.no_grad():
-        bsz = scores.shape[0]
-        for i in range(bsz):
-            id2score[index[i]].append(scores[i])
-        for idx in id2score:
-            if len(id2score[idx]) == 1:
-                id2mean[idx] = torch.tensor(0.0)
-            elif len(id2score[idx]) > 1:
-                id2mean[idx] = torch.mean(torch.tensor(id2score[idx]))
-            else:
-                raise ValueError(f"no score in prompt index: {idx}")
-        for i in range(bsz):
-            response_num = len(id2score[index[i]])
-            if response_num > 1:
-                scores[i] = scores[i] * response_num / (response_num -
-                                                        1) - id2mean[index[i]] * response_num / (response_num - 1)
-        scores = scores.unsqueeze(-1).tile([1, response_length]) * eos_mask
-
-    return scores, scores
-
-
-def compute_reinforce_plus_plus_outcome_advantage(token_level_rewards: torch.Tensor, eos_mask: torch.Tensor,
-                                                  gamma: torch.Tensor):
-    """
-    Compute advantage for REINFORCE++.
-    This implementation is based on the paper: https://arxiv.org/abs/2501.03262
-    Args:
-        token_level_rewards: `(torch.Tensor)`
-            shape: (bs, response_length)
-        eos_mask: `(torch.Tensor)`
-            shape: (bs, response_length)
-    Returns:
-        advantages: `(torch.Tensor)`
-            shape: (bs, response_length)
-        Returns: `(torch.Tensor)`
-            shape: (bs, response_length)
-    """
-
-    with torch.no_grad():
-        returns = torch.zeros_like(token_level_rewards)
-        running_return = 0
-
-        # Return-to-Go: G_t = R_t + \gamma * G_{t+1} Mask(t) for each sample in the batch
-        # G_t = \sum_{k=t to T} \gamma^{k-1} R_k
-        for t in reversed(range(token_level_rewards.shape[1])):
-            running_return = token_level_rewards[:, t] + gamma * running_return
-            returns[:, t] = running_return
-            # Reset after EOS
-            running_return = running_return * eos_mask[:, t]
-
-        advantages = verl_F.masked_whiten(returns, eos_mask)
-        advantages = advantages * eos_mask
-
-    return advantages, returns
-
-
-def compute_remax_outcome_advantage(token_level_rewards: torch.Tensor, reward_baselines: torch.Tensor,
-                                    eos_mask: torch.Tensor):
-    """
-    Compute advantage for ReMax, operating only on Outcome reward
-    This implementation is based on the paper: https://arxiv.org/abs/2310.10505
-
-    (with only one scalar reward for each response).
-    Args:
-        token_level_rewards: `(torch.Tensor)`
-            shape: (bs, response_length)
-        reward_baselines: `(torch.Tensor)`
-            shape: (bs,)
-        eos_mask: `(torch.Tensor)`
-            shape: (bs, response_length)
-    Returns:
-        advantages: `(torch.Tensor)`
-            shape: (bs, response_length)
-        Returns: `(torch.Tensor)`
-            shape: (bs, response_length)
-    """
-    response_length = token_level_rewards.shape[-1]
-    scores = token_level_rewards.sum(dim=-1)
-
-    with torch.no_grad():
-        returns = (token_level_rewards * eos_mask).flip(dims=[-1]).cumsum(dim=-1).flip(dims=[-1])
-        advantages = returns - reward_baselines.unsqueeze(-1).tile([1, response_length]) * eos_mask
-
-    return advantages, returns
 
 
 def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
