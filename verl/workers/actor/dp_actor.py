@@ -281,7 +281,8 @@ class DataParallelPPOActor(BasePPOActor):
 
                     clip_ratio = self.config.clip_ratio
                     entropy_coeff = self.config.entropy_coeff
-                    use_importance_weight = self.config.use_importance_weight
+                    use_importance_weight = self.config.get("use_importance_weight", True)
+                    off_policy_pg = self.config.get("off_policy_pg", False)
 
                     # all return: (bsz, response_length)
                     entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
@@ -291,7 +292,8 @@ class DataParallelPPOActor(BasePPOActor):
                                                                                          advantages=advantages,
                                                                                          eos_mask=response_mask,
                                                                                          cliprange=clip_ratio,
-                                                                                         use_importance_weight=use_importance_weight)
+                                                                                         use_importance_weight=use_importance_weight,
+                                                                                         off_policy_pg=off_policy_pg)
                     # compute entropy loss from entropy
                     entropy_loss = verl_F.masked_mean(entropy, response_mask)
 

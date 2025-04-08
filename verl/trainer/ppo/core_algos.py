@@ -268,7 +268,7 @@ def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
     return token_level_scores - kl * kl_ratio
 
 
-def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, cliprange, use_importance_weight=True):
+def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, cliprange, use_importance_weight=True, off_policy_pg=False):
     """Adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1122
 
     Args:
@@ -298,8 +298,11 @@ def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, cliprange,
     pg_losses2 = -advantages * torch.clamp(ratio, 1.0 - cliprange, 1.0 + cliprange)
 
     if not use_importance_weight:
-        # policy gradient without clip (assume ratio = 1.0 ignore importance weight)
-        pg_loss = verl_F.masked_mean(pg_losses, eos_mask)
+        if off_policy_pg:
+            # \nebla -L(\pi) \approx -\E_{\pi_old} [R(\pi) \nebla \log \pi]
+            pg_loss = verl_F.masked_mean(-advantages * log_prob, eos_mask)
+        else: # policy gradient without clip
+            pg_loss = verl_F.masked_mean(pg_losses, eos_mask)
     else: # ppo clip
         pg_loss = verl_F.masked_mean(torch.max(pg_losses, pg_losses2), eos_mask)
     pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses).float(), eos_mask)
