@@ -232,6 +232,43 @@ def compute_reinforce_plus_plus_outcome_advantage(token_level_rewards: torch.Ten
 
     return advantages, returns
 
+def compute_reinforce_outcome_advantage(token_level_rewards: torch.Tensor, eos_mask: torch.Tensor,
+                                                  gamma: torch.Tensor):
+    """
+    Compute advantage for REINFORCE with reward shaping (e.g. sigmoid or tanh).
+    Args:
+        token_level_rewards: `(torch.Tensor)`
+            shape: (bs, response_length)
+        eos_mask: `(torch.Tensor)`
+            shape: (bs, response_length)
+    Returns:
+        advantages: `(torch.Tensor)`
+            shape: (bs, response_length)
+        Returns: `(torch.Tensor)`
+            shape: (bs, response_length)
+    """
+
+    with torch.no_grad():
+        returns = torch.zeros_like(token_level_rewards)
+        running_return = 0
+
+        # Return-to-Go: G_t = R_t + \gamma * G_{t+1} Mask(t) for each sample in the batch
+        # G_t = \sum_{k=t to T} \gamma^{k-1} R_k
+        for t in reversed(range(token_level_rewards.shape[1])):
+            running_return = token_level_rewards[:, t] + gamma * running_return
+            returns[:, t] = running_return
+            # Reset after EOS
+            running_return = running_return * eos_mask[:, t]
+
+        advantages = verl_F.masked_whiten(returns, eos_mask)
+        # Added sigmoid transformation
+        # advantages = torch.sigmoid(advantages)
+        advantages = 2 * torch.sigmoid(advantages) - 1.0
+        # tanh transformation
+        # advantages = torch.tanh(advantages)
+        advantages = advantages * eos_mask
+
+    return advantages, returns
 
 def compute_remax_outcome_advantage(token_level_rewards: torch.Tensor, reward_baselines: torch.Tensor,
                                     eos_mask: torch.Tensor):

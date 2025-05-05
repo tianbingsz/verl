@@ -197,8 +197,13 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             index=data.non_tensor_batch['uid'])
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
-    elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS or adv_estimator == AdvantageEstimator.REINFORCE:
+    elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS:
         advantages, returns = core_algos.compute_reinforce_plus_plus_outcome_advantage(
+            token_level_rewards=data.batch['token_level_rewards'], eos_mask=data.batch['response_mask'], gamma=gamma)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+    elif adv_estimator == AdvantageEstimator.REINFORCE:
+        advantages, returns = core_algos.compute_reinforce_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'], eos_mask=data.batch['response_mask'], gamma=gamma)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
